@@ -1,7 +1,7 @@
 import { NextRequest } from "next/server";
-import { ChatGoogleGenerativeAI } from "@langchain/google-genai";
+import { ChatOpenAI } from "@langchain/openai";
 import { GoogleGenerativeAIEmbeddings } from "@langchain/google-genai";
-import { HumanMessage, SystemMessage, AIMessage } from "@langchain/core/messages";
+import { HumanMessage, SystemMessage, AIMessage, ToolMessage } from "@langchain/core/messages";
 import { createClient } from "@supabase/supabase-js";
 import { searchAndScrapeTool } from "./tools";
 
@@ -10,9 +10,9 @@ const supabase = createClient(
   process.env.SUPABASE_ANON_KEY!
 );
 
-const model = new ChatGoogleGenerativeAI({
-  model: process.env.GEMINI_MODEL ?? "gemini-2.0-flash",
-  apiKey: process.env.GOOGLE_API_KEY,
+const model = new ChatOpenAI({
+  model: process.env.OPENAI_MODEL ?? "gpt-5-mini",
+  apiKey: process.env.OPENAI_API_KEY,
 });
 
 const embedModel = new GoogleGenerativeAIEmbeddings({
@@ -42,9 +42,7 @@ IMPORTANT - Citation rules:
 
 Context:
 ${context}
-
-Available sources:
-${sources}`;
+`;
 
 const modelWithTools = model.bindTools([searchAndScrapeTool]);
 
@@ -121,18 +119,15 @@ export async function POST(req: NextRequest) {
 
   // If the model called the tool, execute it and get a final streamed answer
   if (response.tool_calls && response.tool_calls.length > 0) {
-    const toolResults: string[] = [];
+    langchainMessages.push(response);
+
     for (const tc of response.tool_calls) {
       if (tc.name === "search_and_scrape") {
         const result = await searchAndScrapeTool.invoke({ query: tc.args.query });
-        toolResults.push(typeof result === "string" ? result : JSON.stringify(result));
+        const content = typeof result === "string" ? result : JSON.stringify(result);
+        langchainMessages.push(new ToolMessage({ content, tool_call_id: tc.id! }));
       }
     }
-
-    langchainMessages.push(response);
-    langchainMessages.push(
-      new HumanMessage({ content: `[Tool results]: ${toolResults.join("\n")}` })
-    );
 
     const stream = await model.stream(langchainMessages);
     return streamResponse(stream, "");
