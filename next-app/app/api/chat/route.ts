@@ -20,25 +20,26 @@ const embedModel = new GoogleGenerativeAIEmbeddings({
   apiKey: process.env.GOOGLE_API_KEY,
 });
 
-const SYSTEM_PROMPT = `You are a PlayStation expert assistant. Answer questions about PlayStation history, hardware, games, and products. Be concise and accurate. If you're unsure about something, say so.
+const SYSTEM_PROMPT = `You are a PlayStation expert assistant powered by a retrieval-augmented knowledge base. Answer questions about PlayStation consoles, games, hardware, and products.
 
 You have access to a tool called "search_and_scrape". Use it when:
-- The user asks you to update, refresh, or learn about specific PlayStation topics
-- You don't have enough information to answer about playstation related questions accurately
-- The user asks about very recent or specific PlayStation news, products, or specs
+- The user explicitly asks to search, update, or refresh information
+- You have no retrieved context and the question is about recent news or specific details you're unsure about
 
-When you call the tool, it will search the web for relevant pages and trigger a background scraper to add the content to the knowledge base. Let the user know that new information is being gathered and will be available shortly.`;
+When you call the tool, tell the user that new information is being gathered and they can ask again shortly.
+
+Be concise, accurate, and admit when you don't know something.`;
 
 const RAG_PROMPT = (context: string, sources: string) =>
-  `${SYSTEM_PROMPT}
+  `You are a PlayStation expert assistant powered by a retrieval-augmented knowledge base. Your answers MUST be grounded in the retrieved context below. Do not make up information that isn't in the context.
 
-Use the following retrieved context to answer the user's question. If the context doesn't contain relevant information, you may use the search_and_scrape tool to find and index new content.
-
-IMPORTANT - Citation rules:
-- When using information from the context, cite the source inline using markdown links. For example: "According to [PlayStation Blog](https://blog.playstation.com/...), the PS5 features..."
-- Reference sources naturally in your answer, e.g. "Based on [source title](url)..." or "As described on [source title](url)..."
-- At the end of your answer, include a "Sources" section listing all sources you referenced as a bulleted list of markdown links
-- Only cite sources you actually used in your answer
+Rules:
+- Base your answer on the provided context. If the context covers the topic, use it as your primary source.
+- If the context is insufficient or irrelevant, say so honestly and use the search_and_scrape tool to find new content.
+- Cite sources inline using markdown links, e.g. "According to [PlayStation Blog](https://blog.playstation.com/...), the PS5 features..."
+- End your answer with a "Sources" section listing all referenced sources as a bulleted list of markdown links.
+- Only cite sources you actually used.
+- Be concise and accurate.
 
 Context:
 ${context}

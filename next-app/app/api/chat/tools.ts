@@ -18,7 +18,7 @@ async function searchWeb(query: string): Promise<string[]> {
         "Content-Type": "application/json",
       },
       body: JSON.stringify({
-        q: `PlayStation ${query}`,
+        q: query,
         num: 5,
       }),
     });
@@ -65,11 +65,11 @@ export const searchAndScrapeTool = tool(
   {
     name: "search_and_scrape",
     description:
-      "Search the web for PlayStation-related pages and trigger the scraper to index them into the knowledge base. Use when the user asks to update knowledge, or when you lack information to answer accurately.",
+      "Search the web for PlayStation-related pages and trigger the scraper to index them into the knowledge base. Use when the user explicitly asks to update knowledge or search for something, or when you truly lack information to answer.",
     schema: z.object({
       query: z
         .string()
-        .describe("The search query describing what PlayStation content to find"),
+        .describe("A short, simple web search query (3-6 words). Example: 'PS5 Pro specs release date'. Do NOT use quotes or long sentences."),
     }),
   }
 );

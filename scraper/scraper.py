@@ -45,7 +45,7 @@ MIN_WORD_COUNT = 15
 MAX_LINK_RATIO = 0.3
 RELEVANCE_KEYWORDS = re.compile(
     r"playstation|ps[1-5]|psx|dualsense|dualshock|console|specs|hardware|"
-    r"blu-ray|controller|gpu|cpu|ram|teraflops|ssd|hdmi|sony|game|"
+    r"blu-ray|controller|gpu|cpu|ram|teraflops|ssd|hdmi|sony|game|games|"
     r"exclusive|release|update|firmware|store|network|psn|trophy|vita|psp|vr",
     re.IGNORECASE,
 )
