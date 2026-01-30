@@ -4,37 +4,94 @@ import { z } from "zod";
 const SCRAPER_URL = process.env.SCRAPER_URL ?? "http://localhost:8000";
 const SERPER_API_KEY = process.env.SERPER_API_KEY;
 
-async function searchWeb(query: string): Promise<string[]> {
+export interface SerperImage {
+  image_url: string;
+  alt_text: string;
+  description: string;
+  source_url: string;
+}
+
+interface SearchResult {
+  urls: string[];
+  images: SerperImage[];
+}
+
+async function searchWeb(query: string): Promise<SearchResult> {
   if (!SERPER_API_KEY) {
     console.warn("SERPER_API_KEY not set, skipping web search");
-    return [];
+    return { urls: [], images: [] };
   }
 
   try {
-    const res = await fetch("https://google.serper.dev/search", {
-      method: "POST",
-      headers: {
-        "X-API-KEY": SERPER_API_KEY,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        q: query,
-        num: 5,
+    // Fire both organic and image search in parallel
+    const [organicRes, imageRes] = await Promise.all([
+      fetch("https://google.serper.dev/search", {
+        method: "POST",
+        headers: {
+          "X-API-KEY": SERPER_API_KEY,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ q: query, num: 5 }),
       }),
-    });
+      fetch("https://google.serper.dev/images", {
+        method: "POST",
+        headers: {
+          "X-API-KEY": SERPER_API_KEY,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ q: query, num: 9 }),
+      }),
+    ]);
 
-    if (!res.ok) return [];
+    const urls: string[] = [];
+    const images: SerperImage[] = [];
 
-    const data = await res.json();
-    const urls: string[] = (data.organic ?? [])
-      .map((r: { link?: string }) => r.link)
-      .filter(Boolean);
+    // Extract URLs + thumbnails from organic results
+    if (organicRes.ok) {
+      const data = await organicRes.json();
+      for (const r of data.organic ?? []) {
+        if (r.link) urls.push(r.link);
+        // Organic results sometimes have imageUrl or thumbnailUrl
+        const imgUrl = r.imageUrl || r.thumbnailUrl;
+        if (imgUrl) {
+          images.push({
+            image_url: imgUrl,
+            alt_text: r.title ?? "",
+            description: r.snippet ?? "",
+            source_url: r.link ?? "",
+          });
+        }
+      }
+    }
 
-    console.log("Serper found %d URLs for '%s'", urls.length, query);
-    return urls;
+    // Extract from dedicated image search results
+    if (imageRes.ok) {
+      const data = await imageRes.json();
+      const seen = new Set(images.map((i) => i.image_url));
+      for (const r of data.images ?? []) {
+        const imgUrl = r.imageUrl || r.thumbnailUrl;
+        if (imgUrl && !seen.has(imgUrl)) {
+          seen.add(imgUrl);
+          images.push({
+            image_url: imgUrl,
+            alt_text: r.title ?? "",
+            description: r.snippet ?? r.title ?? "",
+            source_url: r.link ?? "",
+          });
+        }
+      }
+    }
+
+    console.log(
+      "Serper found %d URLs and %d images for '%s'",
+      urls.length,
+      images.length,
+      query
+    );
+    return { urls, images: images.slice(0, 9) };
   } catch (err) {
     console.error("Serper search failed:", err);
-    return [];
+    return { urls: [], images: [] };
   }
 }
 
@@ -53,9 +110,22 @@ async function triggerScraper(urls: string[]): Promise<void> {
   }
 }
 
+// Store the latest images from a tool call so the route can access them
+let _lastToolImages: SerperImage[] = [];
+
+export function getLastToolImages(): SerperImage[] {
+  const imgs = _lastToolImages;
+  _lastToolImages = [];
+  return imgs;
+}
+
 export const searchAndScrapeTool = tool(
   async ({ query }: { query: string }) => {
-    const urls = await searchWeb(query);
+    const { urls, images } = await searchWeb(query);
+
+    // Stash images for the route to pick up
+    _lastToolImages = images;
+
     if (urls.length === 0) {
       return "No relevant URLs found for this query.";
     }
@@ -69,7 +139,9 @@ export const searchAndScrapeTool = tool(
     schema: z.object({
       query: z
         .string()
-        .describe("A short, simple web search query (3-6 words). Example: 'PS5 Pro specs release date'. Do NOT use quotes or long sentences."),
+        .describe(
+          "A short, simple web search query (3-6 words). Example: 'PS5 Pro specs release date'. Do NOT use quotes or long sentences."
+        ),
     }),
   }
 );

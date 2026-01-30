@@ -51,7 +51,6 @@ RELEVANCE_KEYWORDS = re.compile(
 )
 DEDUP_THRESHOLD = 0.95
 
-
 def filter_chunks(chunks: list[str]) -> list[str]:
     """Filter chunks by length, word count, link ratio, and keyword relevance."""
     filtered = []

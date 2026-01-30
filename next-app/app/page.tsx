@@ -3,10 +3,31 @@
 import { useState, useRef, useEffect } from "react";
 import ReactMarkdown from "react-markdown";
 
+interface ImageData {
+  image_url: string;
+  alt_text: string;
+  description: string;
+}
+
 interface Message {
   id: string;
   role: "user" | "assistant";
   content: string;
+  images?: ImageData[];
+}
+
+const IMAGE_DELIMITER = "<!--IMAGES_JSON-->";
+
+function parseStreamContent(raw: string): { text: string; images: ImageData[] } {
+  const idx = raw.indexOf(IMAGE_DELIMITER);
+  if (idx === -1) return { text: raw, images: [] };
+  const text = raw.slice(0, idx);
+  try {
+    const images = JSON.parse(raw.slice(idx + IMAGE_DELIMITER.length));
+    return { text, images };
+  } catch {
+    return { text, images: [] };
+  }
 }
 
 let nextId = 0;
@@ -49,7 +70,7 @@ export default function Home() {
 
       const reader = res.body.getReader();
       const decoder = new TextDecoder();
-      let content = "";
+      let rawContent = "";
 
       // Add empty assistant message to start streaming into
       setMessages((prev) => [
@@ -60,14 +81,22 @@ export default function Home() {
       while (true) {
         const { done, value } = await reader.read();
         if (done) break;
-        content += decoder.decode(value, { stream: true });
-        const snapshot = content;
+        rawContent += decoder.decode(value, { stream: true });
+        const { text, images } = parseStreamContent(rawContent);
         setMessages((prev) =>
           prev.map((m) =>
-            m.id === assistantId ? { ...m, content: snapshot } : m
+            m.id === assistantId ? { ...m, content: text, images } : m
           )
         );
       }
+
+      // Final parse after stream ends
+      const { text, images } = parseStreamContent(rawContent);
+      setMessages((prev) =>
+        prev.map((m) =>
+          m.id === assistantId ? { ...m, content: text, images } : m
+        )
+      );
     } catch {
       setMessages((prev) => [
         ...prev,
@@ -93,7 +122,6 @@ export default function Home() {
         style={{ borderColor: "var(--border)" }}
       >
         <span className="text-lg font-semibold tracking-tight">PlayStation Chat</span>
-       
       </header>
 
       {/* Messages */}
@@ -108,42 +136,74 @@ export default function Home() {
             </div>
           )}
 
-          {messages.map((msg,index) => (
-            <div
-              key={index}
-              className={`flex ${msg.role === "user" ? "justify-end" : "justify-start"}`}
-            >
+          {messages.map((msg, index) => (
+            <div key={index}>
               <div
-                className="max-w-[80%] rounded-2xl px-4 py-2.5 text-sm leading-relaxed overflow-hidden break-words"
-                style={
-                  msg.role === "user"
-                    ? { background: "var(--accent)", color: "#fff" }
-                    : { background: "var(--muted)", color: "var(--foreground)" }
-                }
+                className={`flex ${msg.role === "user" ? "justify-end" : "justify-start"}`}
               >
-                {msg.role === "assistant" ? (
-                  <div className="prose prose-invert prose-sm max-w-none break-words [&_a]:break-all">
-                    <ReactMarkdown
-                      components={{
-                        a: ({ href, children }) => (
-                          <a
-                            href={href}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            className="text-blue-400 underline hover:text-blue-300"
-                          >
-                            {children}
-                          </a>
-                        ),
-                      }}
-                    >
-                      {msg.content}
-                    </ReactMarkdown>
-                  </div>
-                ) : (
-                  <span className="whitespace-pre-wrap">{msg.content}</span>
-                )}
+                <div
+                  className="max-w-[80%] rounded-2xl px-4 py-2.5 text-sm leading-relaxed overflow-hidden break-words"
+                  style={
+                    msg.role === "user"
+                      ? { background: "var(--accent)", color: "#fff" }
+                      : { background: "var(--muted)", color: "var(--foreground)" }
+                  }
+                >
+                  {msg.role === "assistant" ? (
+                    <div className="prose prose-invert prose-sm max-w-none break-words [&_a]:break-all">
+                      <ReactMarkdown
+                        components={{
+                          a: ({ href, children }) => (
+                            <a
+                              href={href}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="text-blue-400 underline hover:text-blue-300"
+                            >
+                              {children}
+                            </a>
+                          ),
+                        }}
+                      >
+                        {msg.content}
+                      </ReactMarkdown>
+                    </div>
+                  ) : (
+                    <span className="whitespace-pre-wrap">{msg.content}</span>
+                  )}
+                </div>
               </div>
+
+              {/* Image grid below assistant message */}
+              {msg.role === "assistant" && msg.images && msg.images.length > 0 && (
+                <div className="mt-2 grid grid-cols-2 gap-2 sm:grid-cols-3 max-w-[80%]">
+                  {msg.images.map((img, i) => (
+                    <a
+                      key={i}
+                      href={img.image_url}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="group overflow-hidden rounded-lg border"
+                      style={{ borderColor: "var(--border)", background: "var(--muted)" }}
+                    >
+                      <img
+                        src={img.image_url}
+                        alt={img.alt_text || img.description}
+                        loading="lazy"
+                        className="aspect-video w-full object-cover transition-transform group-hover:scale-105"
+                      />
+                      {(img.alt_text || img.description) && (
+                        <p
+                          className="truncate px-2 py-1.5 text-xs"
+                          style={{ color: "var(--muted-foreground)" }}
+                        >
+                          {img.alt_text || img.description}
+                        </p>
+                      )}
+                    </a>
+                  ))}
+                </div>
+              )}
             </div>
           ))}
 

@@ -4,7 +4,11 @@ import { ChatOpenAI } from "@langchain/openai";
 import { GoogleGenerativeAIEmbeddings } from "@langchain/google-genai";
 import { HumanMessage, AIMessage } from "@langchain/core/messages";
 import { createClient } from "@supabase/supabase-js";
-import { searchAndScrapeTool } from "./tools";
+import {
+  searchAndScrapeTool,
+  getLastToolImages,
+  type SerperImage,
+} from "./tools";
 
 const supabase = createClient(
   process.env.SUPABASE_URL!,
@@ -103,6 +107,30 @@ async function retrieveContext(query: string): Promise<RetrievalResult> {
   return { context, sources };
 }
 
+/** Store Serper images in Supabase for future cache hits */
+async function storeSerperImages(images: SerperImage[]): Promise<void> {
+  if (images.length === 0) return;
+
+  const rows = images.map((img) => ({
+    image_url: img.image_url,
+    alt_text: img.alt_text,
+    description: img.description,
+    source_url: img.source_url,
+    page_title: img.alt_text,
+  }));
+
+  const { error } = await supabase.from("playstation_images").upsert(rows, {
+    onConflict: "image_url",
+    ignoreDuplicates: true,
+  });
+
+  if (error) {
+    console.error("Failed to store images:", error);
+  } else {
+    console.log("Stored %d images in DB", rows.length);
+  }
+}
+
 export async function POST(req: NextRequest) {
   const { messages } = await req.json();
 
@@ -150,6 +178,26 @@ export async function POST(req: NextRequest) {
             .map((s) => `- ${s}`)
             .join("\n")}`;
           controller.enqueue(encoder.encode(footer));
+        }
+
+        // Grab images from the tool call (if the agent used the tool)
+        const toolImages = getLastToolImages();
+
+        // Store in DB for future queries (fire and forget)
+        if (toolImages.length > 0) {
+          storeSerperImages(toolImages).catch(() => {});
+        }
+
+        // Append images to response
+        const allImages = toolImages.map((img) => ({
+          image_url: img.image_url,
+          alt_text: img.alt_text,
+          description: img.description,
+        }));
+
+        if (allImages.length > 0) {
+          const imagePayload = `\n<!--IMAGES_JSON-->${JSON.stringify(allImages)}`;
+          controller.enqueue(encoder.encode(imagePayload));
         }
       } catch (err) {
         console.error("Agent stream error:", err);
