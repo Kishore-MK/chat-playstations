@@ -8,6 +8,7 @@
         "@ai-sdk/react": "^3.0.60",
         "@langchain/core": "^1.1.17",
         "@langchain/google-genai": "^2.1.13",
+        "@langchain/langgraph": "^1.1.2",
         "@langchain/ollama": "^1.2.1",
         "@langchain/openai": "^1.2.3",
         "@supabase/supabase-js": "^2.93.2",

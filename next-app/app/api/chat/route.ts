@@ -1,7 +1,8 @@
 import { NextRequest } from "next/server";
+import { createAgent } from "langchain";
 import { ChatOpenAI } from "@langchain/openai";
 import { GoogleGenerativeAIEmbeddings } from "@langchain/google-genai";
-import { HumanMessage, SystemMessage, AIMessage, ToolMessage } from "@langchain/core/messages";
+import { HumanMessage, AIMessage } from "@langchain/core/messages";
 import { createClient } from "@supabase/supabase-js";
 import { searchAndScrapeTool } from "./tools";
 
@@ -11,7 +12,7 @@ const supabase = createClient(
 );
 
 const model = new ChatOpenAI({
-  model: process.env.OPENAI_MODEL ?? "gpt-5-mini",
+  model: process.env.OPENAI_MODEL ?? "gpt-4o-mini",
   apiKey: process.env.OPENAI_API_KEY,
 });
 
@@ -20,32 +21,38 @@ const embedModel = new GoogleGenerativeAIEmbeddings({
   apiKey: process.env.GOOGLE_API_KEY,
 });
 
-const SYSTEM_PROMPT = `You are a PlayStation expert assistant powered by a retrieval-augmented knowledge base. Answer questions about PlayStation consoles, games, hardware, and products.
+function buildSystemPrompt(context: string): string {
+  return `You are a PlayStation expert assistant powered by a retrieval-augmented knowledge base.
 
-You have access to a tool called "search_and_scrape". Use it when:
-- The user explicitly asks to search, update, or refresh information
-- You have no retrieved context and the question is about recent news or specific details you're unsure about
+You have access to a tool called "search_and_scrape" that searches the web and triggers scraping of new content into your knowledge base.
 
-When you call the tool, tell the user that new information is being gathered and they can ask again shortly.
+${context ? `## Retrieved Context
+The following content was retrieved from your knowledge base. Evaluate whether it is relevant and sufficient to answer the user's question.
 
-Be concise, accurate, and admit when you don't know something.`;
-
-const RAG_PROMPT = (context: string, sources: string) =>
-  `You are a PlayStation expert assistant powered by a retrieval-augmented knowledge base. Your answers MUST be grounded in the retrieved context below. Do not make up information that isn't in the context.
-
-Rules:
-- Base your answer on the provided context. If the context covers the topic, use it as your primary source.
-- If the context is insufficient or irrelevant, say so honestly and use the search_and_scrape tool to find new content.
-- Cite sources inline using markdown links, e.g. "According to [PlayStation Blog](https://blog.playstation.com/...), the PS5 features..."
-- End your answer with a "Sources" section listing all referenced sources as a bulleted list of markdown links.
-- Only cite sources you actually used.
-- Be concise and accurate.
-
-Context:
 ${context}
-`;
 
-const modelWithTools = model.bindTools([searchAndScrapeTool]);
+## Instructions
+- If the retrieved context is relevant and sufficient, answer using ONLY the context above. Do not make up information.
+- If the retrieved context is irrelevant, outdated, or insufficient for the question, call the search_and_scrape tool to find better information.
+- If the user explicitly asks to search, update, or refresh information, always call the tool regardless of context.` : `## Instructions
+- No relevant content was found in the knowledge base for this query.
+- Use the search_and_scrape tool to find and index relevant content.
+- If the question is general PlayStation knowledge you're confident about, you may answer directly.
+- If the user explicitly asks to search or update, always call the tool.`}
+
+## Response Rules
+- Be concise and accurate. Admit when you don't know something.
+- When using retrieved context, cite sources inline with markdown links, e.g. "According to [PlayStation Blog](https://url)..."
+- End your answer with a "Sources" section listing referenced sources as bulleted markdown links.
+- Only cite sources you actually used.
+- When you call the tool, tell the user new information is being gathered and they can ask again shortly.`;
+}
+
+// Create the LangChain agent — handles the ReAct tool-calling loop automatically
+const agent = createAgent({
+  model,
+  tools: [searchAndScrapeTool],
+});
 
 interface RetrievalResult {
   context: string;
@@ -54,7 +61,6 @@ interface RetrievalResult {
 
 async function retrieveContext(query: string): Promise<RetrievalResult> {
   const queryEmbedding = await embedModel.embedQuery(query);
-
   console.log("Query embedding length:", queryEmbedding.length);
 
   const { data, error } = await supabase.rpc("match_playstation_content", {
@@ -75,7 +81,6 @@ async function retrieveContext(query: string): Promise<RetrievalResult> {
 
   console.log("Retrieved %d chunks from pgvector", data.length);
 
-  // Deduplicate sources by URL
   const seenUrls = new Set<string>();
   const uniqueSources: { title: string; url: string }[] = [];
 
@@ -106,61 +111,51 @@ export async function POST(req: NextRequest) {
     .find((m: { role: string }) => m.role === "user")?.content ?? "";
 
   const { context, sources } = await retrieveContext(lastUserMessage);
-  const systemPrompt = context ? RAG_PROMPT(context, sources) : SYSTEM_PROMPT;
+  const systemPrompt = buildSystemPrompt(context);
 
-  const langchainMessages = [
-    new SystemMessage(systemPrompt),
+  const agentMessages = [
+    { role: "system" as const, content: systemPrompt },
     ...messages.map((m: { role: string; content: string }) =>
-      m.role === "user" ? new HumanMessage(m.content) : new AIMessage(m.content)
+      m.role === "user"
+        ? new HumanMessage(m.content)
+        : new AIMessage(m.content)
     ),
   ];
 
-  // First call: model may respond directly or call a tool
-  const response = await modelWithTools.invoke(langchainMessages);
-
-  // If the model called the tool, execute it and get a final streamed answer
-  if (response.tool_calls && response.tool_calls.length > 0) {
-    langchainMessages.push(response);
-
-    for (const tc of response.tool_calls) {
-      if (tc.name === "search_and_scrape") {
-        const result = await searchAndScrapeTool.invoke({ query: tc.args.query });
-        const content = typeof result === "string" ? result : JSON.stringify(result);
-        langchainMessages.push(new ToolMessage({ content, tool_call_id: tc.id! }));
-      }
-    }
-
-    const stream = await model.stream(langchainMessages);
-    return streamResponse(stream, "");
-  }
-
-  // No tool call — stream the response, append sources footer if we had context
-  const stream = await model.stream(langchainMessages);
-  return streamResponse(stream, sources);
-}
-
-function streamResponse(
-  stream: AsyncIterable<{ content: string | object }>,
-  sourcesFooter: string
-): Response {
   const encoder = new TextEncoder();
   const readable = new ReadableStream({
     async start(controller) {
-      for await (const chunk of stream) {
-        const text =
-          typeof chunk.content === "string"
-            ? chunk.content
-            : JSON.stringify(chunk.content);
-        controller.enqueue(encoder.encode(text));
-      }
+      try {
+        const stream = await agent.stream(
+          { messages: agentMessages },
+          { streamMode: "messages" }
+        );
 
-      // Append sources footer after the LLM stream finishes
-      if (sourcesFooter) {
-        const footer = `\n\n---\n\n**Sources:**\n${sourcesFooter
-          .split("\n")
-          .map((s) => `- ${s}`)
-          .join("\n")}`;
-        controller.enqueue(encoder.encode(footer));
+        for await (const [chunk, metadata] of stream) {
+          // Only stream AI text tokens — skip tool calls and tool result nodes
+          if (
+            chunk._getType() === "ai" &&
+            typeof chunk.content === "string" &&
+            chunk.content &&
+            !metadata?.langgraph_node?.includes("tools")
+          ) {
+            controller.enqueue(encoder.encode(chunk.content));
+          }
+        }
+
+        // Append sources footer after agent finishes
+        if (sources) {
+          const footer = `\n\n---\n\n**Sources:**\n${sources
+            .split("\n")
+            .map((s) => `- ${s}`)
+            .join("\n")}`;
+          controller.enqueue(encoder.encode(footer));
+        }
+      } catch (err) {
+        console.error("Agent stream error:", err);
+        controller.enqueue(
+          encoder.encode("An error occurred while processing your request.")
+        );
       }
 
       controller.close();

@@ -114,7 +114,7 @@ export default function Home() {
               className={`flex ${msg.role === "user" ? "justify-end" : "justify-start"}`}
             >
               <div
-                className="max-w-[80%] rounded-2xl px-4 py-2.5 text-sm leading-relaxed"
+                className="max-w-[80%] rounded-2xl px-4 py-2.5 text-sm leading-relaxed overflow-hidden break-words"
                 style={
                   msg.role === "user"
                     ? { background: "var(--accent)", color: "#fff" }
@@ -122,7 +122,7 @@ export default function Home() {
                 }
               >
                 {msg.role === "assistant" ? (
-                  <div className="prose prose-invert prose-sm max-w-none">
+                  <div className="prose prose-invert prose-sm max-w-none break-words [&_a]:break-all">
                     <ReactMarkdown
                       components={{
                         a: ({ href, children }) => (
